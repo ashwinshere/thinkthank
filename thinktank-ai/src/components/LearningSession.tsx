@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Lightbulb, SendHorizonal, Sparkles, RotateCcw } from "lucide-react";
+import { Lightbulb, SendHorizonal, Sparkles, RotateCcw, BookOpen, KeyRound } from "lucide-react";
 import { Card, SectionHeader } from "./ui/Card";
 import { PeerBadge } from "./PeerBadge";
 import { ChatMessage, Mistake, PeerId, UsageStats } from "@/lib/types";
-import { callAI } from "@/lib/api";
+import { callAI, getStoredApiKey } from "@/lib/api";
 import { loadUsage, saveUsage, saveMistake, nudgeScore } from "@/lib/storage";
 import { PEER_STYLES } from "@/lib/peerStyles";
+import { ApiKeyModal } from "./ApiKeyModal";
 
 const STARTER_PROMPTS = [
   "I don't understand recursion.",
@@ -41,6 +42,7 @@ export function LearningSession() {
   const [reflectionAnswer, setReflectionAnswer] = useState("");
   const [reflectionDone, setReflectionDone] = useState(false);
   const [usedMockOnce, setUsedMockOnce] = useState(false);
+  const [showKeyModal, setShowKeyModal] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -52,9 +54,13 @@ export function LearningSession() {
     saveUsage(next);
   }
 
-  async function sendMessage(text: string, opts?: { forcePeer?: PeerId; isHintRequest?: boolean; isDirectRequest?: boolean }) {
+  async function sendMessage(
+    text: string,
+    opts?: { forcePeer?: PeerId; isHintRequest?: boolean; isDirectRequest?: boolean }
+  ) {
     if (!text.trim() || loading) return;
     const isFirst = messages.length === 0;
+    const activeTopic = isFirst ? text.trim() : topic;
     if (isFirst) setTopic(text.trim());
 
     const studentMsg: ChatMessage = {
@@ -93,6 +99,8 @@ export function LearningSession() {
           priorMistakeTopics: [],
           mode: "learning",
           forcePeer: opts?.forcePeer,
+          isDirectRequest: opts?.isDirectRequest,
+          topic: activeTopic,
         }
       );
 
@@ -173,11 +181,20 @@ export function LearningSession() {
 
   return (
     <div className="max-w-3xl mx-auto">
-      <SectionHeader
-        eyebrow="Learning Session"
-        title="What are you trying to understand?"
-        description="Bring a question or a half-formed idea. Your AI peer team will think it through with you — not for you."
-      />
+      <div className="flex items-center justify-between mb-2">
+        <SectionHeader
+          eyebrow="Learning Session"
+          title="What are you trying to understand?"
+          description="Bring a question or a half-formed idea. Your AI peer team will explain the intuition and think it through with you."
+        />
+        <button
+          onClick={() => setShowKeyModal(true)}
+          className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full border border-line bg-paper hover:border-accent text-ink transition shrink-0 self-start mt-2"
+        >
+          <KeyRound size={13} className="text-accent-dark" />
+          {getStoredApiKey() ? "⚡ Live AI" : "🧠 Smart Mock"}
+        </button>
+      </div>
 
       {messages.length === 0 ? (
         <Card className="p-6 md:p-8">
@@ -200,16 +217,24 @@ export function LearningSession() {
       ) : (
         <Card className="flex flex-col h-[70vh] overflow-hidden">
           {trail.length > 0 && (
-            <div className="px-5 py-3 border-b border-line bg-paper/60 flex items-center gap-2 overflow-x-auto">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-subink shrink-0">
-                Reasoning trail
-              </span>
-              {trail.map((p, i) => (
-                <span key={i} className="flex items-center gap-2 shrink-0">
-                  {i > 0 && <span className="text-subink/50 text-xs">→</span>}
-                  <PeerBadge peer={p} size="sm" />
+            <div className="px-5 py-3 border-b border-line bg-paper/60 flex items-center justify-between gap-2 overflow-x-auto">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-subink shrink-0">
+                  Reasoning trail
                 </span>
-              ))}
+                {trail.map((p, i) => (
+                  <span key={i} className="flex items-center gap-2 shrink-0">
+                    {i > 0 && <span className="text-subink/50 text-xs">→</span>}
+                    <PeerBadge peer={p} size="sm" />
+                  </span>
+                ))}
+              </div>
+              <button
+                onClick={resetSession}
+                className="text-[11px] text-subink hover:text-accent-dark transition flex items-center gap-1 shrink-0 font-medium"
+              >
+                <RotateCcw size={11} /> Reset
+              </button>
             </div>
           )}
 
@@ -298,7 +323,24 @@ export function LearningSession() {
               <div className="flex items-center gap-2 mb-2.5 flex-wrap">
                 <button
                   disabled={loading || messages.length === 0}
-                  onClick={() => sendMessage("I don't know, can you give me a hint?", { forcePeer: "mentor", isHintRequest: true })}
+                  onClick={() =>
+                    sendMessage("Can you explain this concept clearly with an example?", {
+                      forcePeer: "explorer",
+                      isDirectRequest: true,
+                    })
+                  }
+                  className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-accent-light text-accent-dark border border-accent/25 disabled:opacity-40 hover:brightness-95 transition"
+                >
+                  <BookOpen size={13} /> Explain concept
+                </button>
+                <button
+                  disabled={loading || messages.length === 0}
+                  onClick={() =>
+                    sendMessage("I don't know, can you give me a hint?", {
+                      forcePeer: "mentor",
+                      isHintRequest: true,
+                    })
+                  }
                   className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-peer-mentorBg text-peer-mentor border border-peer-mentor/25 disabled:opacity-40 hover:brightness-95 transition"
                 >
                   <Lightbulb size={13} /> I need a hint
@@ -313,7 +355,7 @@ export function LearningSession() {
                 <button
                   disabled={loading || messages.length < 2}
                   onClick={() => setReflecting(true)}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-accent-light text-accent-dark border border-accent/25 disabled:opacity-40 hover:brightness-95 transition"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full bg-paper text-ink border border-line disabled:opacity-40 hover:border-accent transition"
                 >
                   <Sparkles size={13} /> Wrap up &amp; reflect
                 </button>
@@ -328,7 +370,7 @@ export function LearningSession() {
                 <input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="Type your thinking here..."
+                  placeholder="Type your thinking or question here..."
                   className="flex-1 rounded-full border border-line px-4 py-2.5 text-sm bg-paper focus:border-accent focus:bg-white outline-none transition-colors"
                 />
                 <button
@@ -345,11 +387,19 @@ export function LearningSession() {
         </Card>
       )}
 
-      {usedMockOnce && (
-        <p className="text-xs text-subink mt-3 text-center">
-          Running in demo mode with sample responses — add a GEMINI_API_KEY to see live Gemini replies.
-        </p>
+      {usedMockOnce && !getStoredApiKey() && (
+        <div className="mt-3 flex items-center justify-center gap-2 text-xs text-subink">
+          <span>Running on ThinkTank Smart Knowledge Engine.</span>
+          <button
+            onClick={() => setShowKeyModal(true)}
+            className="text-accent-dark font-medium underline hover:text-accent"
+          >
+            Add Gemini API key for live AI
+          </button>
+        </div>
       )}
+
+      <ApiKeyModal isOpen={showKeyModal} onClose={() => setShowKeyModal(false)} />
     </div>
   );
 }
@@ -390,7 +440,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === "student") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[80%] bg-accent text-white rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed animate-fadeUp">
+        <div className="max-w-[85%] bg-accent text-white rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed animate-fadeUp">
           {message.text}
         </div>
       </div>
@@ -400,9 +450,80 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   return (
     <div className="flex flex-col items-start gap-1.5 animate-fadeUp">
       {message.persona && <PeerBadge peer={message.persona} size="sm" />}
-      <div className={`max-w-[80%] ${style.bg} border ${style.border} rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm text-ink leading-relaxed`}>
-        {message.text}
+      <div
+        className={`max-w-[90%] ${style.bg} border ${style.border} rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-ink leading-relaxed shadow-xs`}
+      >
+        <FormattedText text={message.text} />
       </div>
     </div>
   );
 }
+
+function FormattedText({ text }: { text: string }) {
+  // Simple markdown renderer for bold, code blocks, inline code, and paragraphs
+  const parts = text.split(/(```[\s\S]*?```)/g);
+
+  return (
+    <div className="space-y-2">
+      {parts.map((part, idx) => {
+        if (part.startsWith("```") && part.endsWith("```")) {
+          const content = part.replace(/^```[a-z]*\n?|```$/g, "");
+          return (
+            <pre
+              key={idx}
+              className="bg-paper/80 border border-line rounded-xl p-3 text-xs font-mono overflow-x-auto text-ink"
+            >
+              <code>{content}</code>
+            </pre>
+          );
+        }
+
+        const paragraphs = part.split("\n\n");
+        return (
+          <div key={idx} className="space-y-2">
+            {paragraphs.map((para, pIdx) => {
+              if (!para.trim()) return null;
+              // Format bold and inline code
+              const formattedPara = formatInline(para);
+              return (
+                <p key={pIdx} className="leading-relaxed">
+                  {formattedPara}
+                </p>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function formatInline(text: string) {
+  const tokens = text.split(/(\*\*.*?\*\*|`.*?`|\n)/g);
+  return tokens.map((token, i) => {
+    if (token.startsWith("**") && token.endsWith("**")) {
+      return (
+        <strong key={i} className="font-semibold text-ink">
+          {token.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (token.startsWith("`") && token.endsWith("`")) {
+      return (
+        <code
+          key={i}
+          className="bg-paper border border-line px-1.5 py-0.5 rounded text-xs font-mono text-accent-dark"
+        >
+          {token.slice(1, -1)}
+        </code>
+      );
+    }
+    if (token === "\n") {
+      return <br key={i} />;
+    }
+    return token;
+  });
+}
+
+
+

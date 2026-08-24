@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateJSON, generatePeerReply, isGeminiConfigured } from "@/lib/gemini";
+import { generateJSON, generatePeerReply, isGeminiConfigured, testConnection } from "@/lib/gemini";
 import { ORCHESTRATOR_NOTE, PEER_SYSTEM_PROMPTS } from "@/lib/prompts";
 import { decide, OrchestratorInput } from "@/lib/orchestrator";
 import { PeerId } from "@/lib/types";
@@ -17,8 +17,12 @@ import {
 
 export const runtime = "nodejs";
 
-async function safe<T>(fn: () => Promise<T>, fallback: () => T): Promise<{ data: T; usedMock: boolean }> {
-  if (!isGeminiConfigured()) return { data: fallback(), usedMock: true };
+async function safe<T>(
+  fn: () => Promise<T>,
+  fallback: () => T,
+  customApiKey?: string
+): Promise<{ data: T; usedMock: boolean }> {
+  if (!isGeminiConfigured(customApiKey)) return { data: fallback(), usedMock: true };
   try {
     return { data: await fn(), usedMock: false };
   } catch (err) {
@@ -29,18 +33,25 @@ async function safe<T>(fn: () => Promise<T>, fallback: () => T): Promise<{ data:
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { action, payload } = body;
+  const { action, payload, apiKey } = body;
 
   switch (action) {
+    case "test_connection": {
+      const result = await testConnection(apiKey);
+      return NextResponse.json(result);
+    }
+
     case "peer_message": {
       const {
-        history,
-        studentMessage,
-        turnIndex,
+        history = [],
+        studentMessage = "",
+        turnIndex = 0,
         usage,
-        priorMistakeTopics,
-        mode,
+        priorMistakeTopics = [],
+        mode = "learning",
         forcePeer,
+        isDirectRequest,
+        topic,
       } = payload as {
         history: { role: "student" | "peer"; text: string }[];
         studentMessage: string;
@@ -49,10 +60,18 @@ export async function POST(req: NextRequest) {
         priorMistakeTopics: string[];
         mode: "learning" | "debate" | "teach" | "noai";
         forcePeer?: PeerId;
+        isDirectRequest?: boolean;
+        topic?: string;
       };
 
       const decision = forcePeer
-        ? { peer: forcePeer, hintLevel: 1 as const, shouldFlagMisconception: false, shouldSuggestNoAiRound: false, reason: "Requested directly" }
+        ? {
+            peer: forcePeer,
+            hintLevel: (isDirectRequest ? 3 : 1) as 1 | 2 | 3,
+            shouldFlagMisconception: false,
+            shouldSuggestNoAiRound: false,
+            reason: isDirectRequest ? "Direct explanation requested" : "Requested directly",
+          }
         : decide({
             turnIndex,
             studentMessage,
@@ -63,13 +82,18 @@ export async function POST(req: NextRequest) {
 
       const systemInstruction = `${ORCHESTRATOR_NOTE}\n${PEER_SYSTEM_PROMPTS[decision.peer]}${
         decision.peer === "mentor"
-          ? `\nCurrent hint level: ${decision.hintLevel} of 3 (1 = smallest nudge, 3 = strongest hint short of the answer).`
+          ? `\nCurrent hint level: ${decision.hintLevel} of 3 (1 = conceptual nudge/analogy, 2 = step-by-step mechanism, 3 = worked explanation).`
+          : ""
+      }${
+        isDirectRequest
+          ? "\nIMPORTANT: The student has requested a direct, comprehensive explanation. Give a crystal-clear, structured breakdown with intuition, definition, and example."
           : ""
       }`;
 
       const { data: reply, usedMock } = await safe(
-        () => generatePeerReply(systemInstruction, history, studentMessage),
-        () => mockPeerReply(decision.peer)
+        () => generatePeerReply(systemInstruction, history, studentMessage, apiKey),
+        () => mockPeerReply(decision.peer, studentMessage, history, topic, decision.hintLevel, isDirectRequest),
+        apiKey
       );
 
       return NextResponse.json({ decision, reply, usedMock });
@@ -90,9 +114,11 @@ export async function POST(req: NextRequest) {
             smallerQuestion: string;
           }>(
             `${ORCHESTRATOR_NOTE}\nYou analyze a student's reasoning kindly and precisely, for a feature called Mistake Analysis. Never use words like "wrong" or "failed".`,
-            `Topic: ${topic}\nStudent's reasoning: "${studentReasoning}"\n\nReturn JSON with keys: understood (what they got right, 1 sentence), wentWrong (where the reasoning slipped, 1 sentence, gentle), misconception (the likely underlying misconception, 1 sentence), smallerQuestion (a smaller, easier question that helps fix it, 1 sentence).`
+            `Topic: ${topic}\nStudent's reasoning: "${studentReasoning}"\n\nReturn JSON with keys: understood (what they got right, 1 sentence), wentWrong (where the reasoning slipped, 1 sentence, gentle), misconception (the likely underlying misconception, 1 sentence), smallerQuestion (a smaller, easier question that helps fix it, 1 sentence).`,
+            apiKey
           ),
-        () => mockMistakeAnalysis(topic)
+        () => mockMistakeAnalysis(topic),
+        apiKey
       );
 
       return NextResponse.json({ ...data, usedMock });
@@ -108,9 +134,11 @@ export async function POST(req: NextRequest) {
             viewpointB: { persona: "challenger"; argument: string };
           }>(
             `${ORCHESTRATOR_NOTE}\nYou generate two reasonable, opposing viewpoints for a student debate exercise.`,
-            `Debate topic (a claim the student made): "${topic}"\n\nReturn JSON: { "viewpointA": { "persona": "explorer", "argument": "..." }, "viewpointB": { "persona": "challenger", "argument": "..." } }. viewpointA supports the claim, viewpointB reasonably challenges it. Each argument 1-2 sentences, concrete, no hedging filler.`
+            `Debate topic (a claim the student made): "${topic}"\n\nReturn JSON: { "viewpointA": { "persona": "explorer", "argument": "..." }, "viewpointB": { "persona": "challenger", "argument": "..." } }. viewpointA supports the claim, viewpointB reasonably challenges it. Each argument 1-2 sentences, concrete, no hedging filler.`,
+            apiKey
           ),
-        () => mockDebate(topic)
+        () => mockDebate(topic),
+        apiKey
       );
 
       return NextResponse.json({ ...data, usedMock });
@@ -131,9 +159,11 @@ export async function POST(req: NextRequest) {
             feedback: string;
           }>(
             `${ORCHESTRATOR_NOTE}\nYou evaluate a student's explanation for why they picked a side in a debate. IMPORTANT: do not reward them just for picking the "correct" side — evaluate the quality of their reasoning, evidence, and specificity.`,
-            `Topic: "${topic}"\nStudent chose: "${chosenViewpoint}"\nStudent's explanation for why: "${studentReasoning}"\n\nReturn JSON: { "verdict": one of "weak"|"reasonable"|"strong", "strengthScore": 0-100, "feedback": "1-2 sentences of specific, encouraging feedback on the REASONING quality" }.`
+            `Topic: "${topic}"\nStudent chose: "${chosenViewpoint}"\nStudent's explanation for why: "${studentReasoning}"\n\nReturn JSON: { "verdict": one of "weak"|"reasonable"|"strong", "strengthScore": 0-100, "feedback": "1-2 sentences of specific, encouraging feedback on the REASONING quality" }.`,
+            apiKey
           ),
-        () => mockDebateEvaluation()
+        () => mockDebateEvaluation(),
+        apiKey
       );
 
       return NextResponse.json({ ...data, usedMock });
@@ -151,9 +181,11 @@ export async function POST(req: NextRequest) {
             `${ORCHESTRATOR_NOTE}\nYou are a curious peer being TAUGHT by the student about "${topic}". Ask short, genuine follow-up questions that probe for depth (mechanism, edge cases, examples) — like a smart classmate who wants to really get it. After 3-4 exchanges, or once the explanation covers the mechanism, an edge case, and an example, set done=true.`,
             `Conversation so far:\n${conversation
               .map((c) => `${c.role === "student" ? "Student" : "You"}: ${c.text}`)
-              .join("\n")}\n\nReturn JSON: { "reply": "your next short follow-up question or closing acknowledgement", "done": boolean }.`
+              .join("\n")}\n\nReturn JSON: { "reply": "your next short follow-up question or closing acknowledgement", "done": boolean }.`,
+            apiKey
           ),
-        () => mockTeachFollowup()
+        () => mockTeachFollowup(),
+        apiKey
       );
 
       return NextResponse.json({ ...data, usedMock });
@@ -177,9 +209,11 @@ export async function POST(req: NextRequest) {
             `${ORCHESTRATOR_NOTE}\nYou evaluate how well a student taught the concept "${topic}" to a peer.`,
             `Full teaching conversation:\n${conversation
               .map((c) => `${c.role === "student" ? "Student" : "Peer"}: ${c.text}`)
-              .join("\n")}\n\nReturn JSON: { "conceptAccuracy": 0-100, "clarity": 0-100, "missingDetails": "1 short sentence on what's missing, or 'Nothing major' if complete", "exampleGiven": boolean, "summary": "1-2 sentences starting with 'Your explanation is strong because...' or similarly warm framing" }.`
+              .join("\n")}\n\nReturn JSON: { "conceptAccuracy": 0-100, "clarity": 0-100, "missingDetails": "1 short sentence on what's missing, or 'Nothing major' if complete", "exampleGiven": boolean, "summary": "1-2 sentences starting with 'Your explanation is strong because...' or similarly warm framing" }.`,
+            apiKey
           ),
-        () => mockTeachEvaluation()
+        () => mockTeachEvaluation(),
+        apiKey
       );
 
       return NextResponse.json({ ...data, usedMock });
@@ -200,9 +234,11 @@ export async function POST(req: NextRequest) {
             feedback: string;
           }>(
             `${ORCHESTRATOR_NOTE}\nYou evaluate an independent (no-AI-help) problem attempt. This should feel confidence-building, never like an exam grade.`,
-            `Problem: "${problem}"\nStudent's solution/reasoning: "${studentSolution}"\n\nReturn JSON: { "independentReasoning": 0-100, "conceptUnderstanding": 0-100, "selfCorrection": 0-100, "feedback": "2 warm, specific sentences" }.`
+            `Problem: "${problem}"\nStudent's solution/reasoning: "${studentSolution}"\n\nReturn JSON: { "independentReasoning": 0-100, "conceptUnderstanding": 0-100, "selfCorrection": 0-100, "feedback": "2 warm, specific sentences" }.`,
+            apiKey
           ),
-        () => mockNoAiEvaluation()
+        () => mockNoAiEvaluation(),
+        apiKey
       );
 
       return NextResponse.json({ ...data, usedMock });
@@ -225,11 +261,13 @@ export async function POST(req: NextRequest) {
           const text = await generatePeerReply(
             `${ORCHESTRATOR_NOTE}\nYou explain a concept in a specific requested style, for a feature called "Explain it my way". ${styleGuides[style] || styleGuides.simple} Keep it under 5 sentences. Stay factually accurate even while being playful.`,
             [],
-            `Explain: ${doubt}`
+            `Explain: ${doubt}`,
+            apiKey
           );
           return { explanation: text };
         },
-        () => ({ explanation: mockExplain(style, doubt) })
+        () => ({ explanation: mockExplain(style, doubt) }),
+        apiKey
       );
 
       return NextResponse.json({ ...data, usedMock });
@@ -243,11 +281,13 @@ export async function POST(req: NextRequest) {
           const text = await generatePeerReply(
             `${ORCHESTRATOR_NOTE}\nYou give ONE short, specific, encouraging insight (max 2 sentences) about a student's learning habits based on a summary of their recent session. This is about reasoning habits, never an IQ or intelligence judgement.`,
             [],
-            `Session summary: ${summary}\n\nGive one short insight, in the voice of a supportive mentor.`
+            `Session summary: ${summary}\n\nGive one short insight, in the voice of a supportive mentor.`,
+            apiKey
           );
           return { insight: text };
         },
-        () => ({ insight: mockInsight() })
+        () => ({ insight: mockInsight() }),
+        apiKey
       );
 
       return NextResponse.json({ ...data, usedMock });
@@ -257,3 +297,4 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   }
 }
+
