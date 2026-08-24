@@ -1,0 +1,11 @@
+{
+  "name": "thinktank-ai-root",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix thinktank-ai run dev",
+    "build": "npm --prefix thinktank-ai run build",
+    "start": "npm --prefix thinktank-ai run start",
+    "lint": "npm --prefix thinktank-ai run lint"
+  }
+}
