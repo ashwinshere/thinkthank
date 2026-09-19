@@ -1,4 +1,4 @@
-import { PeerId } from "./types";
+import { PeerId, AnswerMode } from "./types";
 
 
 interface TopicContent {
@@ -219,11 +219,13 @@ export function mockPeerReply(
   history: { role: string; text: string }[] = [],
   topicHint?: string | null,
   hintLevel: 1 | 2 | 3 = 1,
-  isDirect: boolean = false
+  isDirect: boolean = false,
+  answerMode?: AnswerMode
 ): string {
   const match = findMatchingTopic(studentMessage, topicHint);
   const msgLower = studentMessage.toLowerCase();
   const asksForDirect =
+    answerMode === "direct" ||
     isDirect ||
     msgLower.includes("explain") ||
     msgLower.includes("what is") ||
@@ -232,12 +234,17 @@ export function mockPeerReply(
     msgLower.includes("direct answer") ||
     msgLower.includes("can you explain");
 
+  // Handle Analogy mode
+  if (answerMode === "analogy") {
+    return mockExplain("simple", studentMessage || topicHint || "this concept");
+  }
+
   if (match) {
     if (asksForDirect && (peer === "explorer" || peer === "mentor")) {
       return match.directExplanation;
     }
 
-    if (peer === "mentor") {
+    if (peer === "mentor" || answerMode === "hint") {
       const hintIdx = (hintLevel - 1) as 0 | 1 | 2;
       return match.mentor[hintIdx] || match.mentor[0];
     }

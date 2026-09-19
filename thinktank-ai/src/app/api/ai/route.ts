@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateJSON, generatePeerReply, isGeminiConfigured, testConnection } from "@/lib/gemini";
 import { ORCHESTRATOR_NOTE, PEER_SYSTEM_PROMPTS } from "@/lib/prompts";
 import { decide, OrchestratorInput } from "@/lib/orchestrator";
-import { PeerId } from "@/lib/types";
+import { PeerId, AnswerMode } from "@/lib/types";
 import {
   mockDebate,
   mockDebateEvaluation,
@@ -52,6 +52,7 @@ export async function POST(req: NextRequest) {
         forcePeer,
         isDirectRequest,
         topic,
+        answerMode,
       } = payload as {
         history: { role: "student" | "peer"; text: string }[];
         studentMessage: string;
@@ -62,15 +63,51 @@ export async function POST(req: NextRequest) {
         forcePeer?: PeerId;
         isDirectRequest?: boolean;
         topic?: string;
+        answerMode?: AnswerMode;
       };
 
-      const decision = forcePeer
+      // Derive peer and parameters based on selected answerMode or explicit overrides
+      let chosenPeer: PeerId | undefined = forcePeer;
+      let effectiveDirect = Boolean(isDirectRequest || answerMode === "direct");
+      let hintLevel: 1 | 2 | 3 = (effectiveDirect ? 3 : 1) as 1 | 2 | 3;
+
+      if (answerMode) {
+        switch (answerMode) {
+          case "direct":
+            chosenPeer = "explorer";
+            effectiveDirect = true;
+            break;
+          case "guided":
+            chosenPeer = "explorer";
+            effectiveDirect = false;
+            break;
+          case "hint":
+            chosenPeer = "mentor";
+            hintLevel = 1;
+            effectiveDirect = false;
+            break;
+          case "challenge":
+            chosenPeer = "challenger";
+            effectiveDirect = false;
+            break;
+          case "counter":
+            chosenPeer = "devils_advocate";
+            effectiveDirect = false;
+            break;
+          case "analogy":
+            chosenPeer = "explorer";
+            effectiveDirect = false;
+            break;
+        }
+      }
+
+      const decision = chosenPeer
         ? {
-            peer: forcePeer,
-            hintLevel: (isDirectRequest ? 3 : 1) as 1 | 2 | 3,
+            peer: chosenPeer,
+            hintLevel,
             shouldFlagMisconception: false,
             shouldSuggestNoAiRound: false,
-            reason: isDirectRequest ? "Direct explanation requested" : "Requested directly",
+            reason: answerMode ? `Selected mode: ${answerMode}` : effectiveDirect ? "Direct explanation requested" : "Requested directly",
           }
         : decide({
             turnIndex,
@@ -80,19 +117,30 @@ export async function POST(req: NextRequest) {
             mode,
           } as OrchestratorInput);
 
+      let modeInstruction = "";
+      if (answerMode === "direct" || effectiveDirect) {
+        modeInstruction = "\nIMPORTANT: The student has requested a direct, comprehensive explanation. Give a crystal-clear, structured breakdown with intuition, definition, concrete example/code, and summary.";
+      } else if (answerMode === "guided") {
+        modeInstruction = "\nIMPORTANT: The student has requested Guided Discovery. Guide them with thought-provoking questions, intuitive stepping stones, and Socratic hints rather than revealing the full answer.";
+      } else if (answerMode === "hint") {
+        modeInstruction = "\nIMPORTANT: The student has requested a progressive hint. Provide an encouraging, gentle step-by-step conceptual nudge to help them discover the answer without spoiling it.";
+      } else if (answerMode === "challenge") {
+        modeInstruction = "\nIMPORTANT: The student has requested a Socratic Challenge. Probe their reasoning, question underlying assumptions, test edge cases, and ask about trade-offs.";
+      } else if (answerMode === "counter") {
+        modeInstruction = "\nIMPORTANT: The student has requested Devil's Advocate mode. Present the strongest reasonable opposing argument or alternative paradigm, challenging conventional wisdom.";
+      } else if (answerMode === "analogy") {
+        modeInstruction = "\nIMPORTANT: The student has requested an Everyday Analogy. Explain this concept as simply as possible using a vivid, everyday real-world metaphor (e.g. cooking, sports, games, traffic, or daily life). Keep it under 5 sentences, intuitive and memorable.";
+      }
+
       const systemInstruction = `${ORCHESTRATOR_NOTE}\n${PEER_SYSTEM_PROMPTS[decision.peer]}${
         decision.peer === "mentor"
           ? `\nCurrent hint level: ${decision.hintLevel} of 3 (1 = conceptual nudge/analogy, 2 = step-by-step mechanism, 3 = worked explanation).`
           : ""
-      }${
-        isDirectRequest
-          ? "\nIMPORTANT: The student has requested a direct, comprehensive explanation. Give a crystal-clear, structured breakdown with intuition, definition, and example."
-          : ""
-      }`;
+      }${modeInstruction}`;
 
       const { data: reply, usedMock } = await safe(
         () => generatePeerReply(systemInstruction, history, studentMessage, apiKey),
-        () => mockPeerReply(decision.peer, studentMessage, history, topic, decision.hintLevel, isDirectRequest),
+        () => mockPeerReply(decision.peer, studentMessage, history, topic, decision.hintLevel, effectiveDirect, answerMode),
         apiKey
       );
 

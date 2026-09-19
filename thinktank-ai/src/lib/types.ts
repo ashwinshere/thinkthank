@@ -54,6 +54,7 @@ export interface ChatMessage {
   id: string;
   role: "student" | "peer" | "system";
   persona?: PeerId;
+  answerMode?: AnswerMode;
   text: string;
   timestamp: number;
 }
@@ -106,3 +107,71 @@ export type ExplainStyle =
   | "story"
   | "cinema"
   | "tanglish";
+
+export type AnswerMode =
+  | "direct"
+  | "guided"
+  | "hint"
+  | "challenge"
+  | "counter"
+  | "analogy";
+
+export interface AnswerModeOption {
+  id: AnswerMode;
+  label: string;
+  tagline: string;
+  badge: string;
+  iconName: string;
+  peer: PeerId;
+}
+
+export const ANSWER_MODES: Record<AnswerMode, AnswerModeOption> = {
+  direct: {
+    id: "direct",
+    label: "Direct Explanation",
+    tagline: "Crystal-clear breakdown with concepts, mechanism, and code/examples.",
+    badge: "Clear Breakdown",
+    iconName: "BookOpen",
+    peer: "explorer",
+  },
+  guided: {
+    id: "guided",
+    label: "Guided Discovery",
+    tagline: "Think it through together — asks guiding questions to build intuition.",
+    badge: "Socratic",
+    iconName: "Compass",
+    peer: "explorer",
+  },
+  hint: {
+    id: "hint",
+    label: "Progressive Hints",
+    tagline: "Gentle step-by-step clues without giving away the full answer.",
+    badge: "Coaching",
+    iconName: "Lightbulb",
+    peer: "mentor",
+  },
+  challenge: {
+    id: "challenge",
+    label: "Socratic Challenge",
+    tagline: "Tests your reasoning, edge cases, and architectural trade-offs.",
+    badge: "Deep Probe",
+    iconName: "BrainCircuit",
+    peer: "challenger",
+  },
+  counter: {
+    id: "counter",
+    label: "Devil's Advocate",
+    tagline: "Argues the opposing side and questions common assumptions.",
+    badge: "Counter-view",
+    iconName: "ShieldAlert",
+    peer: "devils_advocate",
+  },
+  analogy: {
+    id: "analogy",
+    label: "Everyday Analogy",
+    tagline: "Explain it simply like I'm 10 using a vivid real-life metaphor.",
+    badge: "Intuitive",
+    iconName: "Sparkles",
+    peer: "explorer",
+  },
+};
